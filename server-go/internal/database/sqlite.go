@@ -12,7 +12,7 @@ import (
 )
 
 // OpenSQLite opens an existing database. It never creates a database or runs
-// migrations. The connection permits later session writes; this stage only reads.
+// migrations. The connection permits login to write to the existing sessions table.
 func OpenSQLite(ctx context.Context, path string) (*sql.DB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("open SQLite: database path is empty")
@@ -26,7 +26,7 @@ func OpenSQLite(ctx context.Context, path string) (*sql.DB, error) {
 	if !strings.HasPrefix(uriPath, "/") {
 		uriPath = "/" + uriPath // Windows drive paths need a leading slash in a URI.
 	}
-	dsn := url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=rw"}
+	dsn := url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=rw&_pragma=foreign_keys(1)"}
 	db, err := sql.Open("sqlite", dsn.String())
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite: %w", err)
