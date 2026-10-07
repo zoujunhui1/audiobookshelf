@@ -82,3 +82,17 @@ func (r *SessionRepository) Rotate(ctx context.Context, session Session, newToke
 	}
 	return count == 1, nil
 }
+
+// InvalidateByRefreshToken deletes only sessions identified by a stored current
+// token. The subquery keeps all-device lookup/deletion in one SQLite statement.
+func (r *SessionRepository) InvalidateByRefreshToken(ctx context.Context, token string, allDevices bool) error {
+	query := `DELETE FROM sessions WHERE refreshToken = ?`
+	if allDevices {
+		query = `DELETE FROM sessions WHERE userId IN
+			(SELECT userId FROM sessions WHERE refreshToken = ?)`
+	}
+	if _, err := r.db.ExecContext(ctx, query, token); err != nil {
+		return fmt.Errorf("invalidate refresh sessions: %w", err)
+	}
+	return nil
+}

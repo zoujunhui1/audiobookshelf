@@ -15,12 +15,14 @@ lightweight, widely used, and the team already has experience with it.
 
 ## Status
 
-The local authentication experiment includes `POST /login`, `POST /auth/refresh`,
+The local authentication experiment includes `POST /login`, `POST /auth/refresh`, `POST /logout`,
 Bearer access-token middleware, protected `GET /api/me`, and public `/health`.
 Login verifies the existing bcrypt hash, issues access/refresh JWTs, and inserts
 a session. Refresh validates and rotates the stored session credentials. The
 protected endpoint verifies an access JWT and reads the current user from SQLite.
-Logout, OIDC, and full response projection are not implemented.
+Logout deletes stored refresh sessions and clears the refresh cookie. This local
+authentication slice is functionally complete for the experiment; OIDC and full
+response projection are not implemented.
 
 ## Layout
 
@@ -29,11 +31,11 @@ server-go/
   cmd/server/main.go        entry point: loads config, optionally opens SQLite, starts the server
   internal/config/          port, optional database path, signing key and token lifetimes
   internal/database/        existing SQLite connection; no schema creation/migrations
-  internal/repository/      users, session insertion/lookup/rotation and stored signing-key read
-  internal/services/        local login, access-token verification and refresh rotation
+  internal/repository/      users, session insertion/lookup/rotation/deletion and stored signing-key read
+  internal/services/        local login, access-token verification, refresh rotation and logout
   internal/middleware/      Bearer authentication for the protected endpoint
   internal/router/          gin route registration
-  internal/handlers/        /health, /login, /auth/refresh, minimal /api/me and shared token response helpers
+  internal/handlers/        /health, /login, /auth/refresh, /logout, minimal /api/me and shared token response helpers
 ```
 
 The user repository returns ID, username, password hash (`pash`), user type,
@@ -51,6 +53,7 @@ calls the same authentication service, which verifies the JWT and reads the
 user repository; the handler returns the authenticated identity. There is no
 generic repository or unused interface hierarchy. Refresh follows the same
 handler/service/repository layering and shares login's token response/cookie helpers.
+Logout follows the same layers, with session deletion contained in the repository.
 
 ## Running it
 
@@ -66,7 +69,7 @@ curl http://localhost:4000/health
 # {"status":"ok"}
 ```
 
-With no `GO_DATABASE_PATH`, `/health` works while `/login`, `/auth/refresh`, and
+With no `GO_DATABASE_PATH`, `/health` works while `/login`, `/auth/refresh`, `/logout`, and
 `/api/me` return `503`. To open an existing Audiobookshelf database, set
 `GO_DATABASE_PATH` to its filesystem path
 (Node stores it at `<ConfigPath>/absdatabase.sqlite`). Prefer a disposable copy
@@ -81,7 +84,8 @@ When configured, startup verifies that the database can be opened and fails if
 it is missing or inaccessible. It opens in SQLite `mode=rw` (existing-file only),
 with one connection and foreign keys enabled. No tables or schema are created
 or migrated. Successful login inserts one row into the existing `sessions` table;
-refresh updates that row. User records and settings are not modified. Use a database initialized
+refresh updates that row and logout deletes matching session rows. User records
+and settings are not modified. Use a database initialized
 by Node with the authentication tables already present. `/health` stays
 independent of database queries and is not a database readiness endpoint.
 
@@ -119,7 +123,7 @@ Successful login returns this deliberately reduced projection:
 
 Both JWTs use HS256 and contain `userId`, `username`, UUIDv4 `jti`, `type`
 (`access` or `refresh`), and second-based `iat`/`exp`. The access token can be used
-with `/api/me`; the refresh credential is used only at `/auth/refresh`.
+with `/api/me`; the refresh credential is used at `/auth/refresh` and `/logout`.
 
 By default the refresh token is delivered in an `HttpOnly`, `SameSite=Lax`,
 `Path=/` cookie with the configured refresh lifetime. `Secure` is set for TLS
@@ -179,7 +183,7 @@ it does not require a refresh-session row, matching Node's access-token flow.
 This stage deliberately omits Node's full user projection, query-parameter
 tokens, legacy non-expiring/untyped tokens, old-user-ID aliases, and API keys.
 It accepts only Bearer access credentials for the current user ID; failures are
-JSON rather than Passport's text response. Logout and OIDC remain unimplemented.
+JSON rather than Passport's text response. OIDC remains unimplemented.
 
 ## Refresh
 
@@ -225,8 +229,42 @@ Expired session rows are rejected but not automatically removed; cleanup is
 deferred. No login/refresh rate limiter or full browser response projection is
 added. A present empty header rejects the request even with a valid cookie,
 following this experiment's explicit header precedence; Node instead falls back
-to the cookie for an empty header. Logout and OIDC remain outside the experiment's
+to the cookie for an empty header. OIDC remains outside the experiment's
 implemented interfaces.
+
+## Local logout
+
+```sh
+curl -X POST http://localhost:4000/logout \
+  -H 'x-refresh-token: YOUR_REFRESH_TOKEN'
+# {"redirect_url":null}
+```
+
+Cookie mode can send login/refresh's cookie with `-b cookies.txt -c cookies.txt`.
+Matching Node's logout (which differs from refresh), a nonempty `refresh_token`
+cookie takes precedence over `x-refresh-token`; an empty/missing cookie falls
+back to the header. Every response clears the refresh cookie at `Path=/`, with
+the same HttpOnly, SameSite and Secure attributes used when issuing it.
+
+Normal logout deletes the exact current stored refresh session. With
+`?allDevices=1`, one SQLite statement deletes all sessions belonging to the user
+identified by that stored token; other users' sessions remain. No access token,
+request body, or user ID is accepted as an alternative logout credential.
+Missing, unknown, malformed or already-deleted tokens return `200` with
+`{"redirect_url":null}`. A matching stored token is sufficient for deletion,
+even if expired or the user is inactive, as in Node; logout does not validate
+JWT claims or parse session expiry. Deletion failures return a generic
+`500 {"error":"Logout failed"}` while still clearing the browser cookie.
+Without authentication configured, logout clears the cookie and returns `503`.
+
+Issued access JWTs remain valid until expiry (subject to the existing current
+user/active checks), including after all-device logout. This experiment has no
+global access-token revocation. As with refresh, only the current stored token
+is recognized: Node's all-device logout can also match `lastRefreshToken`.
+Passport/Express session logout, `auth_method` cookie cleanup and OIDC provider
+logout are omitted because this Go slice does not create those sessions/cookies.
+Unlike Node's normal logout, database deletion errors are reported as `500`
+rather than silently returning success.
 
 ## Tests
 
@@ -246,6 +284,10 @@ do not use a real user database or a large contract framework. Refresh tests cov
 both transport modes and header precedence, token/session expiry, unknown or
 inactive credentials, rotation/replay, persisted session metadata, new access
 tokens reaching `/api/me`, failed writes, and concurrent single-use rotation.
+Logout tests cover cookie/header precedence, cookie clearing, missing/invalid
+credentials, repeated logout, expired sessions, all-device deletion with another
+user preserved, storage failures, rejected refresh after logout, and continued
+access-token/login/health behavior.
 
 ## Building
 
