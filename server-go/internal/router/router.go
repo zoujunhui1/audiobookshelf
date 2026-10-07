@@ -13,10 +13,13 @@ import (
 func New(authService *services.AuthService) *gin.Engine {
 	r := gin.Default()
 
-	// login/refresh/logout/authorize routes land here during merge — see
-	// server-go/ai/workflow.md
-
 	r.GET("/health", handlers.Health)
+
+	r.POST("/login", handlers.Login(authService))
+	r.POST("/auth/refresh", handlers.Refresh(authService))
+	r.POST("/logout", handlers.Logout(authService))
+	// Node mounts this under ApiRouter's "/api" prefix (MiscController#authorize).
+	r.POST("/api/authorize", handlers.Authorize(authService))
 
 	return r
 }

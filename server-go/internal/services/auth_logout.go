@@ -26,10 +26,11 @@ import (
 // TokenManager#jwtAuthCheck).
 var ErrInvalidToken = errors.New("invalid or expired access token")
 
-// ErrUserInactive is returned by Authorize when the access token's user no
-// longer exists or has been deactivated (TokenManager#jwtAuthCheck checks
-// `!user?.isActive`).
-var ErrUserInactive = errors.New("user not found or inactive")
+// ErrUserInactive (Authorize's case: the access token's user no longer
+// exists or has been deactivated — TokenManager#jwtAuthCheck checks
+// `!user?.isActive`) is declared once, in auth_login.go, and reused here —
+// both files used to declare it independently, which built fine on each
+// dev's own branch but collided once merged into the same package.
 
 // LogoutResult mirrors the body Auth.js's /logout route sends back:
 // `res.send({ redirect_url: logoutUrl })`. server-go does not implement the
@@ -184,7 +185,7 @@ func (s *AuthService) Authorize(_ context.Context, accessToken string) (*Authori
 		UserDefaultLibraryID: nil,
 		ServerSettings:       map[string]any{},
 		EreaderDevices:       []any{},
-		Source:               "",
+		Source:               sourceEnv(), // shared with Login/Refresh, see auth_login.go
 	}, nil
 }
 
