@@ -7,6 +7,21 @@ description: Rules for implementing an Audiobookshelf login-module endpoint in G
 
 Use this skill when implementing one or more login-module endpoints in `server-go/`. The goal is behavior parity with the existing Node.js implementation, not a redesign.
 
+## Never improve the business logic — replicate it exactly
+
+Do not fix, improve, simplify, or otherwise diverge from the existing Node.js
+behavior, even when the Go idiom or a stricter/more "correct" behavior seems
+better. Example: if Node returns 401 on an unexpected DB error during refresh,
+Go returns 401 too — not 500, even though 500 is arguably more semantically
+accurate. If you believe the Node behavior is actually a bug, do not silently
+"fix" it — port it as-is and flag it in your report/commit message instead, and
+let the reviewer/orchestrator decide whether to intentionally diverge.
+
+Parity with the existing behavior is the entire point of this rewrite: this
+project's golden-sample contract tests (`go-rewrite-test` skill) compare Go's
+responses against Node's byte-for-byte, and a reviewer's job (`go-rewrite-review`
+skill) is to catch exactly this kind of unrequested deviation.
+
 ## Ground truth source files (read before writing code)
 
 - `server/Auth.js` — route definitions, login/logout/refresh/OIDC handlers
