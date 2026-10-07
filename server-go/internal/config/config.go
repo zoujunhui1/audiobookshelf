@@ -3,7 +3,8 @@ package config
 import "os"
 
 type Config struct {
-	Port string
+	Port         string
+	DatabasePath string
 }
 
 func Load() Config {
@@ -11,5 +12,8 @@ func Load() Config {
 	if port == "" {
 		port = "4000"
 	}
-	return Config{Port: port}
+	return Config{
+		Port:         port,
+		DatabasePath: os.Getenv("GO_DATABASE_PATH"),
+	}
 }
