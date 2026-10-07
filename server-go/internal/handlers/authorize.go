@@ -23,7 +23,7 @@ func Authorize(authService *services.AuthService) gin.HandlerFunc {
 			token = c.Query("token")
 		}
 
-		result, err := authService.Authorize(token)
+		result, err := authService.Authorize(c.Request.Context(), token)
 		if err != nil {
 			if errors.Is(err, services.ErrInvalidToken) || errors.Is(err, services.ErrUserInactive) {
 				c.AbortWithStatus(http.StatusUnauthorized)
@@ -39,10 +39,12 @@ func Authorize(authService *services.AuthService) gin.HandlerFunc {
 
 // bearerToken extracts the token from an "Authorization: Bearer <token>"
 // header value, or returns "" if the header is absent or a different scheme.
+// The scheme is matched case-insensitively, matching passport-jwt's
+// fromAuthHeaderWithScheme (auth_scheme_lower === auth_params.scheme.toLowerCase()).
 func bearerToken(header string) string {
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
+	scheme, value, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
 		return ""
 	}
-	return strings.TrimPrefix(header, prefix)
+	return value
 }

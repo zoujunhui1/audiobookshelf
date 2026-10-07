@@ -23,9 +23,13 @@ func Logout(authService *services.AuthService) gin.HandlerFunc {
 		}
 		allDevices := c.Query("allDevices") == "1"
 
-		c.SetCookie("refresh_token", "", -1, "/", "", false, true)
+		// Node's res.clearCookie('refresh_token', { path: '/' }) only sets
+		// path, so httpOnly/secure/sameSite all fall back to Express's
+		// defaults (false) here too — deliberately not reusing the
+		// login/refresh cookie flags, which do set httpOnly.
+		c.SetCookie("refresh_token", "", -1, "/", "", false, false)
 
-		result, err := authService.Logout(refreshToken, allDevices)
+		result, err := authService.Logout(c.Request.Context(), refreshToken, allDevices)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 			return

@@ -7,6 +7,7 @@
 package services
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -44,7 +45,7 @@ type LogoutResult struct {
 // empty — that mirrors Auth.js's own "No refresh token on request" no-op
 // case for the single-device branch, and TokenManager#invalidateAllSessionsForRefreshToken's
 // own empty-token guard for the allDevices branch.
-func (s *AuthService) Logout(refreshToken string, allDevices bool) (*LogoutResult, error) {
+func (s *AuthService) Logout(_ context.Context, refreshToken string, allDevices bool) (*LogoutResult, error) {
 	switch {
 	case allDevices:
 		if err := s.invalidateAllSessionsForRefreshToken(refreshToken); err != nil {
@@ -141,7 +142,7 @@ type AuthorizeResult struct {
 // MiscController#authorize: `this.auth.getUserLoginResponsePayload(req.user)`).
 // accessToken must be a non-expired, HS256-signed access token (not a
 // refresh token) for an active user.
-func (s *AuthService) Authorize(accessToken string) (*AuthorizeResult, error) {
+func (s *AuthService) Authorize(_ context.Context, accessToken string) (*AuthorizeResult, error) {
 	if accessToken == "" {
 		return nil, ErrInvalidToken
 	}
@@ -206,6 +207,17 @@ func verifyAccessToken(secret, token string) (*accessTokenClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, errors.New("malformed token")
+	}
+
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("decoding token header: %w", err)
+	}
+	var h struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(header, &h); err != nil || h.Alg != "HS256" {
+		return nil, errors.New("unsupported algorithm")
 	}
 
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
