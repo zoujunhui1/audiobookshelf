@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// User contains only the data required for local credential verification.
+// User contains the data required for local login and authenticated identity.
 type User struct {
 	ID           string
 	Username     string
@@ -44,6 +44,26 @@ func (r *UserRepository) GetByUsername(ctx context.Context, username string) (*U
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user by username: %w", err)
+	}
+	return &user, nil
+}
+
+// GetByID reads the current identity for protected requests. Password hashes
+// are not needed here, so they are not selected. Missing users return (nil, nil).
+func (r *UserRepository) GetByID(ctx context.Context, id string) (*User, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var user User
+	err := r.db.QueryRowContext(ctx, `SELECT id, username, COALESCE(type, ''),
+		COALESCE(isActive, 0) FROM users WHERE id = ?`, id).Scan(
+		&user.ID, &user.Username, &user.Type, &user.IsActive,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user by ID: %w", err)
 	}
 	return &user, nil
 }

@@ -14,6 +14,7 @@ import (
 )
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
+var ErrInvalidAccessToken = errors.New("invalid access token")
 
 type AuthService struct {
 	users                       *repository.UserRepository
@@ -94,4 +95,31 @@ func (s *AuthService) sign(user *repository.User, tokenType string, now time.Tim
 		return "", fmt.Errorf("sign login token: %w", err)
 	}
 	return signed, nil
+}
+
+// AuthenticateAccessToken accepts this experiment's expiring access JWTs.
+// Identity and active status come from SQLite, not from cached JWT user fields.
+func (s *AuthService) AuthenticateAccessToken(ctx context.Context, value string) (*repository.User, error) {
+	token, err := jwt.Parse(value, func(token *jwt.Token) (any, error) {
+		return s.secret, nil
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
+	if err != nil || !token.Valid {
+		return nil, ErrInvalidAccessToken
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || claims["type"] != "access" {
+		return nil, ErrInvalidAccessToken
+	}
+	userID, ok := claims["userId"].(string)
+	if !ok || userID == "" {
+		return nil, ErrInvalidAccessToken
+	}
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil || !user.IsActive {
+		return nil, ErrInvalidAccessToken
+	}
+	return user, nil
 }
