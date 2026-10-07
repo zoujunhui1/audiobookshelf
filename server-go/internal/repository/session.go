@@ -72,17 +72,29 @@ func (r *SessionRepository) FindByRefreshToken(token string) (*Session, error) {
 }
 
 // RotateTokens updates a session's refreshToken (and the grace-period fields)
-// after a successful rotation. Pass lastRefreshToken/lastRefreshTokenExpiresAt
-// as nil to clear the grace period instead of setting one.
-func (r *SessionRepository) RotateTokens(id, newRefreshToken string, newExpiresAt time.Time, lastRefreshToken *string, lastRefreshTokenExpiresAt *time.Time) error {
-	_, err := r.db.Exec(
-		`UPDATE sessions SET refreshToken = ?, expiresAt = ?, lastRefreshToken = ?, lastRefreshTokenExpiresAt = ? WHERE id = ?`,
-		newRefreshToken, newExpiresAt, lastRefreshToken, lastRefreshTokenExpiresAt, id,
+// after a successful rotation, but only if the row still has
+// previousRefreshToken — an optimistic lock matching Node's
+// rotateTokensForSession (TokenManager.js), which guards against two
+// concurrent/retried refreshes racing each other. Pass
+// lastRefreshToken/lastRefreshTokenExpiresAt as nil to clear the grace
+// period instead of setting one.
+//
+// Returns false (no error) if another rotation already won the race — the
+// caller must then re-read the session and use its current refreshToken
+// instead of minting a second one, exactly like Node's numUpdated===0 path.
+func (r *SessionRepository) RotateTokens(id, previousRefreshToken, newRefreshToken string, newExpiresAt time.Time, lastRefreshToken *string, lastRefreshTokenExpiresAt *time.Time) (bool, error) {
+	result, err := r.db.Exec(
+		`UPDATE sessions SET refreshToken = ?, expiresAt = ?, lastRefreshToken = ?, lastRefreshTokenExpiresAt = ? WHERE id = ? AND refreshToken = ?`,
+		newRefreshToken, newExpiresAt, lastRefreshToken, lastRefreshTokenExpiresAt, id, previousRefreshToken,
 	)
 	if err != nil {
-		return fmt.Errorf("rotating session %s: %w", id, err)
+		return false, fmt.Errorf("rotating session %s: %w", id, err)
 	}
-	return nil
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("checking rotation result for session %s: %w", id, err)
+	}
+	return n > 0, nil
 }
 
 // Delete removes a single session (single-device logout).
