@@ -3,7 +3,8 @@ package config
 import "os"
 
 type Config struct {
-	Port string
+	Port   string
+	DBPath string
 }
 
 func Load() Config {
@@ -11,5 +12,13 @@ func Load() Config {
 	if port == "" {
 		port = "4000"
 	}
-	return Config{Port: port}
+
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		// Same file the Node.js server opens at <CONFIG_PATH>/absdatabase.sqlite,
+		// with CONFIG_PATH defaulting to "config" at the repo root (see index.js).
+		dbPath = "../config/absdatabase.sqlite"
+	}
+
+	return Config{Port: port, DBPath: dbPath}
 }

@@ -11,7 +11,7 @@ func main() {
 	cfg := config.Load()
 	r := router.New()
 
-	log.Printf("listening on :%s", cfg.Port)
+	log.Printf("listening on :%s (db: %s)", cfg.Port, cfg.DBPath)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatal(err)
 	}
