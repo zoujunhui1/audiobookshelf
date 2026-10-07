@@ -9,7 +9,7 @@ Use this skill to review a login-module implementation in `server-go/`. This is 
 
 ## What to check, in order
 
-1. **Parity with Node.js** — open `server/Auth.js` / `server/auth/TokenManager.js` / `server/controllers/MiscController.js` (whichever applies to the endpoint under review) side by side with the Go code. Check:
+1. **Parity with Node.js** — open `server/Auth.js` / `server/auth/TokenManager.js` / `server/controllers/MiscController.js` (whichever applies to the endpoint under review) side by side with the Go code. A deliberate "improvement" over Node's actual behavior (a stricter status code, an extra validation Node doesn't do, etc.) is itself a finding to report, not something to let pass because it seems like better engineering — see the `go-rewrite-dev` skill's "never improve the business logic" rule. Check:
    - Status codes match on success and on every error path (401 vs 400 vs 500)
    - Response JSON has the same top-level keys as `getUserLoginResponsePayload` in `Auth.js`
    - Cookie name and flags (`httpOnly`, `sameSite`, `secure`, `maxAge`) match
