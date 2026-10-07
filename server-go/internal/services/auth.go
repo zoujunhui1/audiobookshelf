@@ -35,6 +35,7 @@ func NewAuthService(users *repository.UserRepository, sessions *repository.Sessi
 		accessExpiry: accessExpiry, refreshExpiry: refreshExpiry}, nil
 }
 
+// LoginResult is the user and token pair returned by login or refresh.
 type LoginResult struct {
 	User                       *repository.User
 	AccessToken, RefreshToken  string
@@ -92,7 +93,7 @@ func (s *AuthService) sign(user *repository.User, tokenType string, now time.Tim
 	})
 	signed, err := token.SignedString(s.secret)
 	if err != nil {
-		return "", fmt.Errorf("sign login token: %w", err)
+		return "", fmt.Errorf("sign authentication token: %w", err)
 	}
 	return signed, nil
 }

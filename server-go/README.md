@@ -15,11 +15,12 @@ lightweight, widely used, and the team already has experience with it.
 
 ## Status
 
-The local authentication experiment includes `POST /login`, Bearer access-token
-middleware, protected `GET /api/me`, and public `/health`. Login verifies the
-existing bcrypt hash, issues access/refresh JWTs, and inserts a session. The
+The local authentication experiment includes `POST /login`, `POST /auth/refresh`,
+Bearer access-token middleware, protected `GET /api/me`, and public `/health`.
+Login verifies the existing bcrypt hash, issues access/refresh JWTs, and inserts
+a session. Refresh validates and rotates the stored session credentials. The
 protected endpoint verifies an access JWT and reads the current user from SQLite.
-Refresh/logout routes, OIDC, and full response projection are not implemented.
+Logout, OIDC, and full response projection are not implemented.
 
 ## Layout
 
@@ -28,11 +29,11 @@ server-go/
   cmd/server/main.go        entry point: loads config, optionally opens SQLite, starts the server
   internal/config/          port, optional database path, signing key and token lifetimes
   internal/database/        existing SQLite connection; no schema creation/migrations
-  internal/repository/      user lookup, session insertion and stored signing-key read
-  internal/services/        local credentials, token/session creation and access-token verification
+  internal/repository/      users, session insertion/lookup/rotation and stored signing-key read
+  internal/services/        local login, access-token verification and refresh rotation
   internal/middleware/      Bearer authentication for the protected endpoint
   internal/router/          gin route registration
-  internal/handlers/        /health, /login and minimal /api/me HTTP handlers
+  internal/handlers/        /health, /login, /auth/refresh, minimal /api/me and shared token response helpers
 ```
 
 The user repository returns ID, username, password hash (`pash`), user type,
@@ -48,7 +49,8 @@ credentials and selects token transport; the service verifies credentials and
 creates tokens/session; repositories contain the SQL. For `/api/me`, middleware
 calls the same authentication service, which verifies the JWT and reads the
 user repository; the handler returns the authenticated identity. There is no
-generic repository or unused interface hierarchy.
+generic repository or unused interface hierarchy. Refresh follows the same
+handler/service/repository layering and shares login's token response/cookie helpers.
 
 ## Running it
 
@@ -64,9 +66,9 @@ curl http://localhost:4000/health
 # {"status":"ok"}
 ```
 
-With no `GO_DATABASE_PATH`, `/health` works while `/login` and `/api/me` return
-`503`. To open an
-existing Audiobookshelf database, set `GO_DATABASE_PATH` to its filesystem path
+With no `GO_DATABASE_PATH`, `/health` works while `/login`, `/auth/refresh`, and
+`/api/me` return `503`. To open an existing Audiobookshelf database, set
+`GO_DATABASE_PATH` to its filesystem path
 (Node stores it at `<ConfigPath>/absdatabase.sqlite`). Prefer a disposable copy
 for this experiment. For example, in PowerShell:
 
@@ -78,8 +80,8 @@ go run ./cmd/server
 When configured, startup verifies that the database can be opened and fails if
 it is missing or inaccessible. It opens in SQLite `mode=rw` (existing-file only),
 with one connection and foreign keys enabled. No tables or schema are created
-or migrated. Successful login inserts one row into the existing `sessions`
-table; user records and settings are not modified. Use a database initialized
+or migrated. Successful login inserts one row into the existing `sessions` table;
+refresh updates that row. User records and settings are not modified. Use a database initialized
 by Node with the authentication tables already present. `/health` stays
 independent of database queries and is not a database readiness endpoint.
 
@@ -117,7 +119,7 @@ Successful login returns this deliberately reduced projection:
 
 Both JWTs use HS256 and contain `userId`, `username`, UUIDv4 `jti`, `type`
 (`access` or `refresh`), and second-based `iat`/`exp`. The access token can be used
-with `/api/me`. Issuing a refresh credential does not implement a refresh route.
+with `/api/me`; the refresh credential is used only at `/auth/refresh`.
 
 By default the refresh token is delivered in an `HttpOnly`, `SameSite=Lax`,
 `Path=/` cookie with the configured refresh lifetime. `Secure` is set for TLS
@@ -177,8 +179,54 @@ it does not require a refresh-session row, matching Node's access-token flow.
 This stage deliberately omits Node's full user projection, query-parameter
 tokens, legacy non-expiring/untyped tokens, old-user-ID aliases, and API keys.
 It accepts only Bearer access credentials for the current user ID; failures are
-JSON rather than Passport's text response. Refresh, logout and OIDC remain
-outside this milestone.
+JSON rather than Passport's text response. Logout and OIDC remain unimplemented.
+
+## Refresh
+
+Send the refresh credential from login in `x-refresh-token`, or use its cookie:
+
+```sh
+curl -X POST http://localhost:4000/auth/refresh \
+  -H 'x-refresh-token: YOUR_REFRESH_TOKEN'
+```
+
+For cookie mode, save login's cookies with curl's `-c cookies.txt`, then refresh
+with `-b cookies.txt -c cookies.txt`. No request body or access token is required.
+
+- A present `x-refresh-token` header takes precedence over `refresh_token`.
+  In header mode the response includes the new `user.refreshToken`. Cookie mode
+  returns `user.refreshToken: null`. Both modes set the new refresh cookie with
+  the same security attributes/lifetime used by login, matching Node's refresh
+  transport. The response otherwise uses the same minimal login user projection.
+- Refresh requires a signed, unexpired HS256 JWT with `type: "refresh"` and a
+  nonempty `userId`, an exact match to the current stored refresh token, a matching
+  session user ID, an unexpired session, and an existing active user. Access tokens
+  are rejected. Both JWT expiry and SQLite session expiry are checked.
+- Success issues a fresh access/refresh pair and conditionally updates the same
+  session's refresh token, expiry and update timestamp. Session ID, creation time,
+  IP address and user agent stay unchanged. New token lifetimes run from refresh
+  time. Only a successfully persisted pair is returned; no schema is changed.
+- Missing credentials return `401 {"error":"No refresh token provided"}`.
+  Other rejected credentials use the Node-style messages `Invalid token type`,
+  `Invalid refresh token`, `Refresh token expired`, or `User not found or inactive`.
+  Storage failures return generic `500 {"error":"Refresh failed"}` without tokens
+  or cookie changes. Existing access JWTs remain valid after refresh rotation.
+
+### Refresh compatibility limits
+
+Refresh tokens are single-use. There is no Node-style previous-token grace period
+or recovery of a lost rotation response: old tokens immediately return `401`.
+The conditional SQLite update allows only one winner when two requests submit
+the same token; the loser returns `401` rather than receiving the winner's token.
+Previous-token fields are cleared on rotation. `REFRESH_TOKEN_GRACE_PERIOD` is
+not used.
+
+Expired session rows are rejected but not automatically removed; cleanup is
+deferred. No login/refresh rate limiter or full browser response projection is
+added. A present empty header rejects the request even with a valid cookie,
+following this experiment's explicit header precedence; Node instead falls back
+to the cookie for an empty header. Logout and OIDC remain outside the experiment's
+implemented interfaces.
 
 ## Tests
 
@@ -194,7 +242,10 @@ transport, persisted sessions, expiry configuration, failed session writes,
 and `/health`. Protected-endpoint tests reuse those SQLite fixtures and actual
 login tokens, checking rejection cases, current user identity, deactivation/
 deletion, database failures, and no session writes during authentication. They
-do not use a real user database or a large contract framework.
+do not use a real user database or a large contract framework. Refresh tests cover
+both transport modes and header precedence, token/session expiry, unknown or
+inactive credentials, rotation/replay, persisted session metadata, new access
+tokens reaching `/api/me`, failed writes, and concurrent single-use rotation.
 
 ## Building
 

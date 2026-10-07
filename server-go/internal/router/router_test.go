@@ -29,3 +29,11 @@ func TestMeWithoutDatabase(t *testing.T) {
 		t.Fatalf("expected unconfigured authentication to return 503, got %d", response.Code)
 	}
 }
+
+func TestRefreshWithoutDatabase(t *testing.T) {
+	response := httptest.NewRecorder()
+	New(nil).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/auth/refresh", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected unconfigured refresh to return 503, got %d", response.Code)
+	}
+}

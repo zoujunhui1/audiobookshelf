@@ -13,6 +13,7 @@ func New(auth *services.AuthService) *gin.Engine {
 
 	r.GET("/health", handlers.Health)
 	r.POST("/login", handlers.NewLoginHandler(auth).Login)
+	r.POST("/auth/refresh", handlers.NewRefreshHandler(auth).Refresh)
 	r.GET("/api/me", middleware.Authenticate(auth), handlers.Me)
 
 	return r
