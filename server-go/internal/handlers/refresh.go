@@ -27,12 +27,17 @@ func Refresh(auth *services.AuthService) gin.HandlerFunc {
 
 		result, err := auth.Refresh(c.Request.Context(), refreshToken, fromHeader)
 		if err != nil {
-			if msg, ok := refreshErrorMessage(err); ok {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": msg})
-				return
-			}
+			// Node's handleRefreshToken wraps the whole flow in one try/catch
+			// and maps every error — including an unexpected DB failure — to
+			// 401 "Invalid refresh token", never a 500. Matched exactly here,
+			// even though a distinct 500 would be more conventional: see the
+			// go-rewrite-dev skill's "never improve the business logic" rule.
 			_ = c.Error(err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+			msg, ok := refreshErrorMessage(err)
+			if !ok {
+				msg = "Invalid refresh token"
+			}
+			c.JSON(http.StatusUnauthorized, gin.H{"error": msg})
 			return
 		}
 

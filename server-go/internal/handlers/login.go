@@ -10,9 +10,13 @@ import (
 	"audiobookshelf-go/internal/services"
 )
 
+// Username/Password are pointers so a field that is present-but-empty (passes
+// through to the auth service, e.g. for passwordless root login) can be told
+// apart from a field that is absent entirely (400) — mirrors passport-local's
+// strategy.js, which only fails the request on a null (missing) field.
 type loginRequest struct {
-	Username string `json:"username" form:"username"`
-	Password string `json:"password" form:"password"`
+	Username *string `json:"username" form:"username"`
+	Password *string `json:"password" form:"password"`
 }
 
 // Login handles POST /login. Like passport-local it answers 400 when a
@@ -22,13 +26,13 @@ func Login(auth *services.AuthService) gin.HandlerFunc {
 		var req loginRequest
 		// A body that fails to parse is treated like missing credentials.
 		_ = c.ShouldBind(&req)
-		if req.Username == "" || req.Password == "" {
+		if req.Username == nil || req.Password == nil {
 			c.String(http.StatusBadRequest, http.StatusText(http.StatusBadRequest))
 			return
 		}
 
 		returnTokens := c.GetHeader("x-return-tokens") == "true"
-		result, err := auth.Login(c.Request.Context(), req.Username, req.Password, c.ClientIP(), c.Request.UserAgent(), returnTokens)
+		result, err := auth.Login(c.Request.Context(), *req.Username, *req.Password, c.ClientIP(), c.Request.UserAgent(), returnTokens)
 		if errors.Is(err, services.ErrInvalidCredentials) {
 			c.String(http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 			return

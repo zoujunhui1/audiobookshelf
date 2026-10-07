@@ -47,7 +47,7 @@ type LoginUser struct {
 // LoginResponse mirrors getUserLoginResponsePayload in server/Auth.js.
 type LoginResponse struct {
 	User                 LoginUser      `json:"user"`
-	UserDefaultLibraryID string         `json:"userDefaultLibraryId"`
+	UserDefaultLibraryID *string        `json:"userDefaultLibraryId"`
 	ServerSettings       map[string]any `json:"serverSettings"`
 	EreaderDevices       []any          `json:"ereaderDevices"`
 	Source               string         `json:"Source"`
@@ -73,11 +73,26 @@ func (s *AuthService) Login(_ context.Context, username, password, ipAddress, us
 	if err != nil {
 		return nil, fmt.Errorf("loading user %q: %w", username, err)
 	}
-	if !user.IsActive || user.Pash == "" {
+	if !user.IsActive {
 		return nil, ErrInvalidCredentials
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Pash), []byte(password)); err != nil {
+	// Mirrors LocalAuthStrategy.verifyCredentials exactly: a freshly
+	// initialized server's root user has no password set yet, and must be
+	// allowed to log in with an empty password to reach the setup wizard —
+	// but only with an empty password; any non-empty password is rejected.
+	// Any other user with no password set (e.g. OpenID-only accounts) is
+	// always rejected, regardless of what password was supplied.
+	switch {
+	case user.Type == "root" && user.Pash == "":
+		if password != "" {
+			return nil, ErrInvalidCredentials
+		}
+	case user.Pash == "":
 		return nil, ErrInvalidCredentials
+	default:
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Pash), []byte(password)); err != nil {
+			return nil, ErrInvalidCredentials
+		}
 	}
 
 	accessToken, err := s.signToken(user, "access", s.cfg.AccessTokenExpiry)
@@ -160,11 +175,23 @@ func (s *AuthService) Refresh(_ context.Context, refreshToken string, returnToke
 			return nil, fmt.Errorf("generating refresh token: %w", err)
 		}
 		graceExpires := now.Add(s.cfg.RefreshGracePeriod)
-		err = s.sessions.RotateTokens(session.ID, newRefresh, now.Add(s.cfg.RefreshTokenExpiry), &session.RefreshToken, &graceExpires)
+		rotated, err := s.sessions.RotateTokens(session.ID, session.RefreshToken, newRefresh, now.Add(s.cfg.RefreshTokenExpiry), &session.RefreshToken, &graceExpires)
 		if err != nil {
 			return nil, fmt.Errorf("rotating session: %w", err)
 		}
-		currentRefresh = newRefresh
+		if rotated {
+			currentRefresh = newRefresh
+		} else {
+			// Lost the race to a concurrent/retried refresh that already
+			// rotated this session — mirrors Node's rotateTokensForSession:
+			// hand back the token that already won instead of minting a
+			// second, conflicting one.
+			latest, err := s.sessions.FindByRefreshToken(session.RefreshToken)
+			if err != nil {
+				return nil, fmt.Errorf("re-reading session after rotation race: %w", err)
+			}
+			currentRefresh = latest.RefreshToken
+		}
 	}
 
 	return &AuthResult{
@@ -175,13 +202,23 @@ func (s *AuthService) Refresh(_ context.Context, refreshToken string, returnToke
 }
 
 // deleteExpiredSession removes the session whose current refresh token has
-// expired. Failures are ignored: the caller is already rejecting the request.
+// expired. Failures are ignored: the caller is already rejecting the request,
+// and a leftover expired row is harmless (it just won't match future lookups).
 func (s *AuthService) deleteExpiredSession(refreshToken string) {
 	session, err := s.sessions.FindByRefreshToken(refreshToken)
 	if err != nil || session.RefreshToken != refreshToken {
 		return
 	}
 	_ = s.sessions.Delete(session.ID) // best-effort cleanup, matches Node
+}
+
+// sourceEnv mirrors index.js's `options.source || process.env.SOURCE || 'debian'`
+// (the CLI --source flag isn't ported here, so only the env-var/default part applies).
+func sourceEnv() string {
+	if v := os.Getenv("SOURCE"); v != "" {
+		return v
+	}
+	return "debian"
 }
 
 func loginResponse(user *repository.User, accessToken, refreshToken string, includeRefresh bool) *LoginResponse {
@@ -196,10 +233,11 @@ func loginResponse(user *repository.User, accessToken, refreshToken string, incl
 		u.RefreshToken = &refreshToken
 	}
 	return &LoginResponse{
-		User:           u,
-		ServerSettings: map[string]any{},
-		EreaderDevices: []any{},
-		Source:         os.Getenv("SOURCE"),
+		User:                 u,
+		UserDefaultLibraryID: nil,
+		ServerSettings:       map[string]any{},
+		EreaderDevices:       []any{},
+		Source:               sourceEnv(),
 	}
 }
 
