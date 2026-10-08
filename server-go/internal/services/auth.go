@@ -10,11 +10,12 @@ import (
 )
 
 type AuthService struct {
-	users    *repository.UserRepository
-	sessions *repository.SessionRepository
-	cfg      config.Config
+	users     *repository.UserRepository
+	sessions  *repository.SessionRepository
+	libraries *repository.LibraryRepository
+	cfg       config.Config
 }
 
-func NewAuthService(users *repository.UserRepository, sessions *repository.SessionRepository, cfg config.Config) *AuthService {
-	return &AuthService{users: users, sessions: sessions, cfg: cfg}
+func NewAuthService(users *repository.UserRepository, sessions *repository.SessionRepository, libraries *repository.LibraryRepository, cfg config.Config) *AuthService {
+	return &AuthService{users: users, sessions: sessions, libraries: libraries, cfg: cfg}
 }

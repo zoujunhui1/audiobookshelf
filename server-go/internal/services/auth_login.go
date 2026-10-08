@@ -34,14 +34,27 @@ var (
 
 // LoginUser is the user object inside a login/refresh response. Only the
 // fields available from UserRepository are populated; the full
-// User.toOldJSONForBrowser() field set is not yet ported.
+// User.toOldJSONForBrowser() field set is not yet ported (missing: email,
+// token, isOldToken, mediaProgress, seriesHideFromContinueListening,
+// bookmarks, lastSeen, createdAt, hasOpenIDLink). Type, Permissions, and
+// LibrariesAccessible are not optional even at this narrow scope:
+// client/store/user.js's getCanAccessLibrary getter reads
+// user.permissions.accessAllLibraries and user.librariesAccessible to
+// decide whether the frontend can open ANY library at all — omitting them
+// makes every library lookup fail client-side with "access not allowed",
+// even though the API itself would have allowed it. client/pages/login.vue's
+// post-login redirect also checks user.type === 'root'.
 type LoginUser struct {
-	ID           string  `json:"id"`
-	Username     string  `json:"username"`
-	IsActive     bool    `json:"isActive"`
-	IsLocked     bool    `json:"isLocked"`
-	AccessToken  string  `json:"accessToken"`
-	RefreshToken *string `json:"refreshToken"`
+	ID                  string         `json:"id"`
+	Username            string         `json:"username"`
+	Type                string         `json:"type"`
+	Permissions         map[string]any `json:"permissions"`
+	LibrariesAccessible []string       `json:"librariesAccessible"`
+	ItemTagsSelected    []string       `json:"itemTagsSelected"`
+	IsActive            bool           `json:"isActive"`
+	IsLocked            bool           `json:"isLocked"`
+	AccessToken         string         `json:"accessToken"`
+	RefreshToken        *string        `json:"refreshToken"`
 }
 
 // LoginResponse mirrors getUserLoginResponsePayload in server/Auth.js.
@@ -108,8 +121,12 @@ func (s *AuthService) Login(_ context.Context, username, password, ipAddress, us
 		return nil, fmt.Errorf("creating session: %w", err)
 	}
 
+	response, err := s.loginResponse(user, accessToken, refreshToken, returnTokens)
+	if err != nil {
+		return nil, err
+	}
 	return &AuthResult{
-		Response:     loginResponse(user, accessToken, refreshToken, returnTokens),
+		Response:     response,
 		RefreshToken: refreshToken,
 		CookieMaxAge: s.cfg.RefreshTokenExpiry,
 	}, nil
@@ -194,8 +211,12 @@ func (s *AuthService) Refresh(_ context.Context, refreshToken string, returnToke
 		}
 	}
 
+	response, err := s.loginResponse(user, accessToken, currentRefresh, returnToken)
+	if err != nil {
+		return nil, err
+	}
 	return &AuthResult{
-		Response:     loginResponse(user, accessToken, currentRefresh, returnToken),
+		Response:     response,
 		RefreshToken: currentRefresh,
 		CookieMaxAge: s.cfg.RefreshTokenExpiry,
 	}, nil
@@ -221,24 +242,110 @@ func sourceEnv() string {
 	return "debian"
 }
 
-func loginResponse(user *repository.User, accessToken, refreshToken string, includeRefresh bool) *LoginResponse {
+func (s *AuthService) loginResponse(user *repository.User, accessToken, refreshToken string, includeRefresh bool) (*LoginResponse, error) {
+	permissions, librariesAccessible, itemTagsSelected, err := browserPermissions(user)
+	if err != nil {
+		return nil, err
+	}
 	u := LoginUser{
-		ID:          user.ID,
-		Username:    user.Username,
-		IsActive:    user.IsActive,
-		IsLocked:    user.IsLocked,
-		AccessToken: accessToken,
+		ID:                  user.ID,
+		Username:            user.Username,
+		Type:                user.Type,
+		Permissions:         permissions,
+		LibrariesAccessible: librariesAccessible,
+		ItemTagsSelected:    itemTagsSelected,
+		IsActive:            user.IsActive,
+		IsLocked:            user.IsLocked,
+		AccessToken:         accessToken,
 	}
 	if includeRefresh {
 		u.RefreshToken = &refreshToken
 	}
+	defaultLibraryID, err := s.defaultLibraryID(user)
+	if err != nil {
+		return nil, err
+	}
 	return &LoginResponse{
 		User:                 u,
-		UserDefaultLibraryID: nil,
+		UserDefaultLibraryID: defaultLibraryID,
 		ServerSettings:       map[string]any{},
 		EreaderDevices:       []any{},
 		Source:               sourceEnv(),
+	}, nil
+}
+
+// userPermissions is the subset of the "permissions" JSON column (see
+// repository.User.Permissions) needed to replicate
+// User#checkCanAccessLibrary (server/models/User.js).
+type userPermissions struct {
+	AccessAllLibraries  bool     `json:"accessAllLibraries"`
+	LibrariesAccessible []string `json:"librariesAccessible"`
+}
+
+// browserPermissions replicates User#toOldJSONForBrowser's permissions
+// split exactly: librariesAccessible and itemTagsSelected are pulled out of
+// the raw permissions JSON into their own top-level response fields, and
+// deleted from the permissions object that's left.
+func browserPermissions(user *repository.User) (permissions map[string]any, librariesAccessible []string, itemTagsSelected []string, err error) {
+	permissions = map[string]any{}
+	if user.Permissions != "" {
+		if err := json.Unmarshal([]byte(user.Permissions), &permissions); err != nil {
+			return nil, nil, nil, fmt.Errorf("parsing permissions for user %s: %w", user.ID, err)
+		}
 	}
+	if v, ok := permissions["librariesAccessible"].([]any); ok {
+		for _, id := range v {
+			if s, ok := id.(string); ok {
+				librariesAccessible = append(librariesAccessible, s)
+			}
+		}
+	}
+	if v, ok := permissions["itemTagsSelected"].([]any); ok {
+		for _, tag := range v {
+			if s, ok := tag.(string); ok {
+				itemTagsSelected = append(itemTagsSelected, s)
+			}
+		}
+	}
+	delete(permissions, "librariesAccessible")
+	delete(permissions, "itemTagsSelected")
+	if librariesAccessible == nil {
+		librariesAccessible = []string{}
+	}
+	if itemTagsSelected == nil {
+		itemTagsSelected = []string{}
+	}
+	return permissions, librariesAccessible, itemTagsSelected, nil
+}
+
+// defaultLibraryID mirrors User#getDefaultLibraryId: the first library (in
+// ascending display order) this user can access, or nil if none. The
+// frontend's login redirect (client/pages/login.vue) treats nil specially
+// for root — see the LoginUser.Type doc comment — but still needs a correct
+// value for every other user.
+func (s *AuthService) defaultLibraryID(user *repository.User) (*string, error) {
+	var perms userPermissions
+	if user.Permissions != "" {
+		if err := json.Unmarshal([]byte(user.Permissions), &perms); err != nil {
+			return nil, fmt.Errorf("parsing permissions for user %s: %w", user.ID, err)
+		}
+	}
+
+	libraryIDs, err := s.libraries.GetAllLibraryIDs()
+	if err != nil {
+		return nil, fmt.Errorf("loading library ids: %w", err)
+	}
+
+	accessible := make(map[string]bool, len(perms.LibrariesAccessible))
+	for _, id := range perms.LibrariesAccessible {
+		accessible[id] = true
+	}
+	for _, id := range libraryIDs {
+		if perms.AccessAllLibraries || accessible[id] {
+			return &id, nil
+		}
+	}
+	return nil, nil
 }
 
 // tokenClaims is the JWT payload for both access and refresh tokens.

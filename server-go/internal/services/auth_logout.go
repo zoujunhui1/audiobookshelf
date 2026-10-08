@@ -113,23 +113,30 @@ func (s *AuthService) invalidateAllSessionsForRefreshToken(token string) error {
 
 // AuthorizedUser is the subset of User#toOldJSONForBrowser() that server-go
 // can currently populate from the shared "users" table. The Node payload
-// also carries email, type, permissions, token, and more, but those live on
-// parts of the User model this rewrite round does not touch (see the
-// go-rewrite-dev skill's file-ownership table) — they are intentionally
-// omitted here rather than guessed.
+// also carries email, token, mediaProgress, bookmarks, and more, but those
+// live on parts of the User model this rewrite round does not touch (see
+// the go-rewrite-dev skill's file-ownership table) — they are intentionally
+// omitted here rather than guessed. Permissions/LibrariesAccessible are NOT
+// optional even so: see LoginUser's doc comment in auth_login.go — without
+// them the frontend treats every library as inaccessible regardless of
+// what the API itself would allow.
 type AuthorizedUser struct {
-	ID       string `json:"id"`
-	Username string `json:"username"`
-	IsActive bool   `json:"isActive"`
-	IsLocked bool   `json:"isLocked"`
+	ID                  string         `json:"id"`
+	Username            string         `json:"username"`
+	Type                string         `json:"type"`
+	Permissions         map[string]any `json:"permissions"`
+	LibrariesAccessible []string       `json:"librariesAccessible"`
+	ItemTagsSelected    []string       `json:"itemTagsSelected"`
+	IsActive            bool           `json:"isActive"`
+	IsLocked            bool           `json:"isLocked"`
 }
 
 // AuthorizeResult mirrors the shape built by
-// Auth.js#getUserLoginResponsePayload. ServerSettings, EreaderDevices,
-// UserDefaultLibraryID, and Source depend on the Library, Setting, and
-// EmailSettings subsystems, none of which exist in server-go yet — they are
-// kept here for wire-shape parity but always carry a stub zero value until
-// those repositories land in a later round.
+// Auth.js#getUserLoginResponsePayload. UserDefaultLibraryID is now real
+// (see AuthService.defaultLibraryID). ServerSettings and EreaderDevices
+// still depend on the Setting and EmailSettings subsystems, which don't
+// exist in server-go yet — kept here for wire-shape parity but always carry
+// a stub zero value until those repositories land in a later round.
 type AuthorizeResult struct {
 	User                 AuthorizedUser `json:"user"`
 	UserDefaultLibraryID *string        `json:"userDefaultLibraryId"`
@@ -175,14 +182,27 @@ func (s *AuthService) Authorize(_ context.Context, accessToken string) (*Authori
 		return nil, ErrUserInactive
 	}
 
+	defaultLibraryID, err := s.defaultLibraryID(user)
+	if err != nil {
+		return nil, err
+	}
+	permissions, librariesAccessible, itemTagsSelected, err := browserPermissions(user)
+	if err != nil {
+		return nil, err
+	}
+
 	return &AuthorizeResult{
 		User: AuthorizedUser{
-			ID:       user.ID,
-			Username: user.Username,
-			IsActive: user.IsActive,
-			IsLocked: user.IsLocked,
+			ID:                  user.ID,
+			Username:            user.Username,
+			Type:                user.Type,
+			Permissions:         permissions,
+			LibrariesAccessible: librariesAccessible,
+			ItemTagsSelected:    itemTagsSelected,
+			IsActive:            user.IsActive,
+			IsLocked:            user.IsLocked,
 		},
-		UserDefaultLibraryID: nil,
+		UserDefaultLibraryID: defaultLibraryID,
 		ServerSettings:       map[string]any{},
 		EreaderDevices:       []any{},
 		Source:               sourceEnv(), // shared with Login/Refresh, see auth_login.go

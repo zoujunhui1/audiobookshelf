@@ -25,7 +25,8 @@ func main() {
 
 	users := repository.NewUserRepository(db)
 	sessions := repository.NewSessionRepository(db)
-	authService := services.NewAuthService(users, sessions, cfg)
+	libraries := repository.NewLibraryRepository(db)
+	authService := services.NewAuthService(users, sessions, libraries, cfg)
 
 	r := router.New(authService)
 
