@@ -6,10 +6,11 @@ import (
 	"audiobookshelf-go/internal/handlers"
 )
 
-func New() *gin.Engine {
+func New(auth *handlers.Auth) *gin.Engine {
 	r := gin.Default()
 
 	r.GET("/health", handlers.Health)
+	r.POST("/login", auth.Login)
 
 	return r
 }
